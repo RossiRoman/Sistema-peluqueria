@@ -1,0 +1,5 @@
+node_modules/
+.netlify/
+turnos.json
+config.json
+__pycache__/

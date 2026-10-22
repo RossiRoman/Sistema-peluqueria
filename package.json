@@ -1,0 +1,10 @@
+{
+  "name": "estilo-unico-turnos",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Gestión de turnos - Peluquería Estilo Único (Netlify)",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
+  }
+}
