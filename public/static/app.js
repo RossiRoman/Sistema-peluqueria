@@ -1,6 +1,5 @@
 /* Estilo Único — app única (cliente + administrador). JS nativo + fetch() contra server.py */
 const HERO = "https://lh3.googleusercontent.com/aida-public/AB6AXuCCdP6JXpJ8Oh6aHbsvQ5hplEXpahthn14vVvfyjJpAK4C9RLqwhuyGi1fslBMlgyeDGI6yWf2QPISqAPtLjzMxssiekb9gpWFsBmeXHpYI9_WT3fP1djrasmuS_FD0Uhmyk0R5LEa-1WspK06tHcTb0Hsfvy7Vl4mDTBAaxiyypeVCt_UucFRFpu3_SL14becKsBb4Dcxse_kyMafZjFkZrdxTT6U8YTU4LkCKB9mCmv0FzLMEgEY";
-const CATS = ["Todos", "Corte", "Coloración", "Tratamientos", "Peinados", "Barbería"];
 const I = {
   pin: '<path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
   bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15zM10 21h4"/>',
@@ -32,8 +31,9 @@ const newB = (o = {}) => ({ paso: 1, serv: null, est: 0, fecha: null, hora: null
 const S = {
   cfg: null, view: "inicio", cat: "Todos", b: newB(), mis: null,
   p: JSON.parse(localStorage.getItem("perfil") || "{}"),
-  adm: { tok: sessionStorage.getItem("tok") || "", list: [], f: { q: "", e: "", d: "" }, err: "" }
+  adm: { tok: sessionStorage.getItem("tok") || "", list: [], f: { q: "", e: "", d: "" }, err: "", tab: "agenda", form: null }
 };
+const cats = () => ["Todos", ...new Set(S.cfg.servicios.map((s) => s.categoria))];
 const serv = (id) => S.cfg.servicios.find((s) => s.id == id);
 const est = (id) => S.cfg.estilistas.find((e) => e.id == id);
 const post = (u, b) => fetch(u, { method: "POST", headers: { "Content-Type": "application/json", "X-Admin-Token": S.adm.tok }, body: JSON.stringify(b) }).then((r) => r.json());
@@ -51,8 +51,9 @@ const cargarMis = async () => { S.mis = S.p.telefono ? await get("/api/mis_turno
 
 /* ------------------------------ componentes ------------------------------ */
 const servCard = (s, sel) => `<article class="card sv ${sel ? "sel" : ""}"><div class="sv-t"><div class="meta"><span class="tag">${esc(s.etiqueta)}</span><span class="dur">${ic("clock", 14)}${s.duracion} min</span></div><h4>${esc(s.nombre)}</h4><p>${esc(s.descripcion)}</p><b class="price">${money(s.precio)}</b></div><div class="sv-i">${img(s.imagen, s.nombre)}<button class="btn-s" data-a="pick" data-id="${s.id}">${ic("plus", 16)}Elegir</button></div></article>`;
-const chips = () => `<div class="chips">${CATS.map((c) => `<button class="chip ${S.cat === c ? "on" : ""}" data-a="cat" data-c="${c}">${c}</button>`).join("")}</div>`;
-const listaServ = (max) => { const l = S.cfg.servicios.filter((s) => S.cat === "Todos" || s.categoria === S.cat); return l.slice(0, max || 99); };
+const prodCard = (p) => `<div class="card es pr"><div class="es-p">${img(p.imagen, p.nombre)}</div><h4>${esc(p.nombre)}</h4><span class="sub pr-d">${esc(p.descripcion)}</span><b class="price">${money(p.precio)}</b>${S.cfg.whatsapp ? `<a class="btn" target="_blank" rel="noopener" href="https://wa.me/${S.cfg.whatsapp}?text=${encodeURIComponent("Hola! Me interesa el producto: " + p.nombre + " (" + money(p.precio) + ")")}">Consultar</a>` : ""}</div>`;
+const chips = () => `<div class="chips">${cats().map((c) => `<button class="chip ${S.cat === c ? "on" : ""}" data-a="cat" data-c="${c}">${c}</button>`).join("")}</div>`;
+const listaServ = (max) => { if (!cats().includes(S.cat)) S.cat = "Todos"; const l = S.cfg.servicios.filter((s) => S.cat === "Todos" || s.categoria === S.cat); return l.slice(0, max || 99); };
 
 /* -------------------------------- vistas --------------------------------- */
 const V = {};
@@ -70,6 +71,7 @@ V.inicio = () => {
   <div class="quick"><button data-a="rapido">${ic("bolt")}Primer turno libre</button><button data-a="scroll" data-t="servicios">${ic("leaf")}Elegir Servicio</button></div></div></section>
   ${prox}
   <section class="sec" id="servicios"><div class="sec-h"><div><h2>Explorar Servicios</h2><p class="sub">Elegí y reservá en un solo paso</p></div><button class="link" data-a="nueva">Ver todos ${ic("arrow", 16)}</button></div>${chips()}<div class="list">${listaServ(3).map((s) => servCard(s)).join("")}</div></section>
+  ${S.cfg.productos?.length ? `<section class="sec" id="productos"><div class="sec-h"><div><h2>Productos</h2><p class="sub">Cuidado capilar profesional para llevarte</p></div></div><div class="row">${S.cfg.productos.map(prodCard).join("")}</div></section>` : ""}
   <section class="sec" id="estilistas"><div class="sec-h"><div><h2>Nuestro equipo</h2><p class="sub">Te asignamos al profesional que esté libre en tu horario</p></div></div><div class="row">${S.cfg.estilistas.map((e) => `<div class="card es"><div class="es-p">${img(e.foto, e.nombre)}<span class="tag">${e.disp ? "Disponible hoy" : "Próximamente"}</span><span class="rt">${ic("star", 12)}${e.rating.toFixed(1)}</span></div><h4>${esc(e.nombre)}</h4><span class="sub">${esc(e.rol)}</span></div>`).join("")}</div></section>
   <section class="rev"><div class="stars">${ic("star", 18).repeat(5)}<b>4.9 / 5</b><span class="sub" style="margin-left:auto">+340 opiniones</span></div><blockquote>“La atención en Recoleta es un viaje de calma total. El balayage de Sofía superó mis expectativas: luminoso, natural y sano.”</blockquote><div class="rev-f"><span>Martina G. · Hace 2 días</span><b>Cliente verificada</b></div></section>
   <section class="hrs"><div><span class="circ">${ic("clock")}</span><span><strong>Horario de Atención</strong><span class="sub">Martes a Sábados: 09:30 – 20:00 hs</span></span></div><a class="call" href="tel:+541148000000" aria-label="Llamar">${ic("phone", 18)}</a></section>`;
@@ -128,10 +130,28 @@ V.perfil = () => `<div class="vh"><h2>Tus datos</h2></div><p class="note" style=
   <div class="field" style="margin-top:32px"><button class="btn o" style="width:100%" data-a="go" data-v="admin">${ic("lock", 18)}Acceso administrador</button></div>`;
 
 /* --------------------------------- admin --------------------------------- */
+const admTabs = () => `<div class="tabs" role="tablist">${[["agenda", "Agenda"], ["estilos", "Estilos"], ["productos", "Productos"]].map(([t, n]) => `<button role="tab" class="${S.adm.tab === t ? "on" : ""}" data-a="atab" data-t="${t}">${n}</button>`).join("")}</div>`;
 V.admin = () => !S.adm.tok ? `<div class="card lg"><h2>Panel administrador</h2><p class="sub" style="margin-top:6px">Ingresá el PIN para gestionar la agenda.</p><input id="pin" type="password" inputmode="numeric" maxlength="12" autocomplete="off" aria-label="PIN"><p class="err">${esc(S.adm.err)}</p><button class="btn p" style="width:100%" data-a="login">Ingresar</button><button class="link" style="margin-top:14px" data-a="go" data-v="inicio">Volver a la app</button></div>`
-  : `<div class="vh"><h2>Agenda general</h2><button class="btn o sm" data-a="exportar">${ic("down", 16)}CSV</button><button class="btn o sm" data-a="logout">Salir</button></div><div class="kpis" id="akpi"></div>
+  : `<div class="vh"><h2>${{ agenda: "Agenda general", estilos: "Estilos", productos: "Productos" }[S.adm.tab]}</h2>${S.adm.tab === "agenda" ? `<button class="btn o sm" data-a="exportar">${ic("down", 16)}CSV</button>` : ""}<button class="btn o sm" data-a="logout">Salir</button></div>${admTabs()}${S.adm.tab === "agenda" ? V.admAgenda() : V.admCatalogo(S.adm.tab === "estilos" ? "servicio" : "producto")}`;
+
+V.admAgenda = () => `<div class="kpis" id="akpi"></div>
   <div class="card cfg"><div><strong>Avisos por WhatsApp</strong><p class="sub">Número del administrador con código de país, sin + (ej: 5493511234567). Con la clave de CallMeBot (callmebot.com/blog/free-api-whatsapp-messages) el aviso se envía solo; sin clave, se ofrece un botón para enviarlo.</p></div><input id="wa-n" type="tel" placeholder="5493511234567" aria-label="WhatsApp del administrador"><input id="wa-k" type="password" placeholder="Clave CallMeBot (opcional)" aria-label="Clave CallMeBot" autocomplete="off"><button class="btn p sm" data-a="guardarWa">Guardar</button></div>
   <div class="filt"><input id="a-q" type="search" placeholder="Buscar cliente, servicio o teléfono…" value="${esc(S.adm.f.q)}"><select id="a-e"><option value="">Estado: todos</option>${["Pendiente", "Realizado", "Cancelado"].map((e) => `<option ${S.adm.f.e === e ? "selected" : ""}>${e}</option>`).join("")}</select><input id="a-d" type="date" value="${S.adm.f.d}"><button class="btn o sm" data-a="limpiar" style="min-height:44px">Limpiar</button></div><div class="list" id="alist"></div>`;
+
+/* Catálogo: estilos (servicios reservables) y productos — alta, edición y baja con foto, descripción y precio */
+const NOM = { servicio: ["estilo", "Nuevo estilo"], producto: ["producto", "Nuevo producto"] };
+V.admCatalogo = (k) => {
+  const es = k === "servicio", F = S.adm.form && S.adm.form.k === k ? S.adm.form : null, lista = es ? S.cfg.servicios : S.cfg.productos || [];
+  const form = F ? `<div class="card frm"><h3>${F.id ? "Editar " + NOM[k][0] : NOM[k][1]}</h3>
+    <div class="frm-img"><div id="fm-prev">${img(F.imagen, "Vista previa")}</div><div class="frm-b"><label class="btn o sm up" for="fm-file">${ic("plus", 16)}${F.imagen ? "Cambiar foto" : "Subir foto"}</label><input id="fm-file" type="file" accept="image/*" hidden>${F.imagen ? '<button class="btn o sm" data-a="quitarFoto">Quitar foto</button>' : ""}<span class="sub">JPG, PNG o WebP. Se ajusta sola a un tamaño liviano.</span></div></div>
+    <label class="fl">Nombre<input id="fm-nombre" maxlength="80" value="${esc(F.nombre)}" placeholder="${es ? "Ej: Degradé + Perfilado" : "Ej: Shampoo Reparador 300 ml"}"></label>
+    ${es ? `<div class="fl2"><label class="fl">Categoría<select id="fm-categoria">${S.cfg.categorias.map((c) => `<option ${F.categoria === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label><label class="fl">Duración (min)<input id="fm-duracion" type="number" min="15" max="480" step="15" inputmode="numeric" value="${esc(F.duracion)}"></label></div>` : ""}
+    <div class="fl2"><label class="fl">Precio ($)<input id="fm-precio" type="number" min="1" step="any" inputmode="decimal" value="${esc(F.precio)}" placeholder="12500"></label>${es ? `<label class="fl">Etiqueta (opcional)<input id="fm-etiqueta" maxlength="20" value="${esc(F.etiqueta)}" placeholder="Ej: Nuevo"></label>` : ""}</div>
+    <label class="fl">Descripción<textarea id="fm-desc" rows="3" maxlength="300" placeholder="Contale al cliente de qué se trata">${esc(F.descripcion)}</textarea></label>
+    <div class="frm-a"><button class="btn a sm" data-a="itemGuardar">Guardar</button><button class="btn o sm" data-a="itemCancelar">Cancelar</button></div></div>` : "";
+  const item = (x) => `<article class="card ai"><div class="ai-i">${img(x.imagen, x.nombre)}</div><div class="ai-t"><strong>${esc(x.nombre)}</strong><span class="sub">${es ? esc(x.categoria) + " · " + x.duracion + " min" : "Producto"}</span><p>${esc(x.descripcion)}</p></div><b class="price">${money(x.precio)}</b><div class="acc"><button class="btn o sm" data-a="itemEditar" data-k="${k}" data-id="${x.id}">Editar</button><button class="btn o sm" data-a="itemEliminar" data-k="${k}" data-id="${x.id}">Eliminar</button></div></article>`;
+  return `<div class="ahead"><p class="sub">${es ? "Son los servicios que los clientes pueden reservar." : "Se muestran en el inicio de la app. Si cargás tu WhatsApp, aparece el botón “Consultar”."}</p>${F ? "" : `<button class="btn a sm" data-a="itemNuevo" data-k="${k}">${ic("plus", 16)}${NOM[k][1]}</button>`}</div>${form}<div class="list">${lista.map(item).join("") || `<p class="empty">Todavía no cargaste ${es ? "estilos" : "productos"}.</p>`}</div>`;
+};
 
 function adminDibujar() {
   const L = S.adm.list, f = S.adm.f, hoy = iso(new Date());
@@ -166,7 +186,7 @@ function render() {
   $("#nav").innerHTML = NAV.map(([v, i, t]) => `<button class="${S.view === v ? "on" : ""}" data-a="go" data-v="${v}" ${S.view === v ? 'aria-current="page"' : ""}>${ic(i, 22)}${t}</button>`).join("");
   $("#vista").className = ["inicio", "admin"].includes(S.view) ? "" : "narrow";
   $("#vista").innerHTML = V[S.view]();
-  if (S.view === "admin" && S.adm.tok) adminCargar();
+  if (S.view === "admin" && S.adm.tok && S.adm.tab === "agenda") adminCargar();
   if (S.view === "turnos" && S.p.telefono && S.mis === null) cargarMis().then(() => S.view === "turnos" && render());
   if (S.view === "reservar" && S.b.paso === 2 && S.b.slots === null) cargarSlots();
 }
@@ -183,6 +203,7 @@ async function cargarHoy() {   // para "Hoy libre" y "Disponible hoy" en el inic
   S.hoyLibre = false;
   for (const e of S.cfg.estilistas) {
     const s = S.cfg.servicios.find((x) => e.categorias.includes(x.categoria));
+    if (!s) { e.disp = false; continue; }
     const r = await get(`/api/disponibilidad?fecha=${hoy}&servicio=${s.id}&estilista=${e.id}`);
     e.disp = r.some((x) => x.libre); S.hoyLibre ||= e.disp;
   }
@@ -240,6 +261,28 @@ const A = {
     const r = await post("/api/admin_config", { whatsapp: $("#wa-n").value, clave: $("#wa-k").value });
     toast(r.exito ? "✅ " + r.mensaje : "⚠️ " + r.mensaje); if (r.exito) { $("#wa-k").value = ""; S.cfg.whatsapp = $("#wa-n").value.replace(/\D/g, ""); }
   },
+  atab: (el) => { S.adm.tab = el.dataset.t; S.adm.form = null; render(); },
+  itemNuevo: (el) => { S.adm.form = { k: el.dataset.k, id: 0, nombre: "", categoria: S.cfg.categorias[0], duracion: 45, precio: "", etiqueta: "", descripcion: "", imagen: "" }; render(); $("#fm-nombre")?.focus(); },
+  itemEditar: (el) => {
+    const k = el.dataset.k, x = (k === "servicio" ? S.cfg.servicios : S.cfg.productos).find((y) => y.id == el.dataset.id);
+    S.adm.form = { k, id: x.id, nombre: x.nombre, categoria: x.categoria, duracion: x.duracion, precio: x.precio, etiqueta: x.etiqueta === x.categoria ? "" : x.etiqueta || "", descripcion: x.descripcion || "", imagen: x.imagen || "" };
+    render(); scrollTo(0, 0);
+  },
+  itemCancelar: () => { S.adm.form = null; render(); },
+  quitarFoto: () => { leerForm(); S.adm.form.imagen = ""; render(); },
+  itemGuardar: async () => {
+    const F = leerForm(), es = F.k === "servicio";
+    const r = await post(es ? "/api/servicio_guardar" : "/api/producto_guardar", { id: F.id, nombre: F.nombre, categoria: F.categoria, duracion: F.duracion, precio: F.precio, etiqueta: F.etiqueta, descripcion: F.descripcion, imagen: F.imagen });
+    if (!r.exito) return toast("⚠️ " + r.mensaje);
+    S.adm.form = null; await recargarCfg(); toast("✅ " + r.mensaje); render();
+  },
+  itemEliminar: async (el) => {
+    const es = el.dataset.k === "servicio";
+    if (!confirm(es ? "¿Eliminar este estilo? Los turnos ya reservados se conservan." : "¿Eliminar este producto?")) return;
+    const r = await post(es ? "/api/servicio_eliminar" : "/api/producto_eliminar", { id: +el.dataset.id });
+    if (!r.exito) return toast("⚠️ " + r.mensaje);
+    await recargarCfg(); toast("✅ " + r.mensaje); render();
+  },
   limpiar: () => { S.adm.f = { q: "", e: "", d: "" }; render(); },
   exportar: async () => {
     const r = await fetch("/api/exportar", { headers: { "X-Admin-Token": S.adm.tok } });
@@ -247,6 +290,26 @@ const A = {
     const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = "agenda_turnos.csv"; a.click();
   }
 };
+const recargarCfg = async () => { const c = await fetch("/api/config").then((r) => r.json()); c.estilistas.forEach((e) => { e.disp = S.cfg.estilistas.find((x) => x.id === e.id)?.disp; }); S.cfg = c; };
+function leerForm() {   // pasa lo tipeado en el formulario al estado, para no perderlo al redibujar
+  const F = S.adm.form, v = (id) => $("#" + id)?.value ?? "";
+  Object.assign(F, { nombre: v("fm-nombre"), precio: v("fm-precio"), descripcion: v("fm-desc") });
+  if (F.k === "servicio") Object.assign(F, { categoria: v("fm-categoria"), duracion: v("fm-duracion"), etiqueta: v("fm-etiqueta") });
+  return F;
+}
+async function subirFoto(file) {
+  const F = S.adm.form;
+  try {
+    toast("Subiendo foto…");
+    const bmp = await createImageBitmap(file), k = Math.min(1, 900 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement("canvas"); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    const x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, 0, 0, c.width, c.height);
+    const r = await post("/api/subir_imagen", { imagen: c.toDataURL("image/jpeg", 0.82) });
+    if (!r.exito) return toast("⚠️ " + r.mensaje);
+    leerForm(); F.imagen = r.url; render(); toast("✅ Foto cargada.");
+  } catch { toast("⚠️ No se pudo leer esa imagen. Probá con un JPG o PNG."); }
+}
+document.addEventListener("change", (e) => { if (e.target.id === "fm-file" && e.target.files[0] && S.adm.form) subirFoto(e.target.files[0]); });
 function keepForm() { const n = $("#f-n"), t = $("#f-t"); if (n) guardarPerfil({ nombre: n.value, telefono: t.value }); }
 document.addEventListener("click", (e) => { const el = e.target.closest("[data-a]"); if (el && A[el.dataset.a]) A[el.dataset.a](el); });
 document.addEventListener("input", (e) => {

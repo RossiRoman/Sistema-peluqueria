@@ -1,4 +1,4 @@
-import csv, json, os, secrets, threading
+import base64, csv, json, os, re, secrets, threading, uuid
 from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from io import StringIO
@@ -9,6 +9,9 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 PUBLIC = os.path.join(BASE, "public")   # sitio estático (el mismo que se publica en Netlify)
 DB = os.path.join(BASE, "turnos.json")
 CFG = os.path.join(BASE, "config.json")
+CATALOGO = os.path.join(BASE, "catalogo.json")   # estilos (servicios) y productos editados desde el panel admin
+IMGDIR = os.path.join(BASE, "imagenes")          # fotos subidas desde el panel admin
+TIPOS_IMG = {"jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
 ADMIN_PIN = os.environ.get("ADMIN_PIN", "1234")   # PIN del panel administrador
 FORMAS_PAGO = ["Efectivo", "Transferencia"]
 APERTURA, CIERRE, PASO = 9 * 60 + 30, 20 * 60, 30   # Martes a Sábados 09:30-20:00, turnos cada 30 min
@@ -65,6 +68,12 @@ class SistemaPeluqueria:
             Estilista(3, "Camila Rossi", "Hair Stylist", 4.9, ["Corte", "Peinados", "Coloración"], IMG["camila"]),
             Estilista(4, "Mateo R.", "Estilista", 4.8, ["Corte", "Peinados", "Barbería"], IMG["mateo"]),
         ]}
+        self.productos = {}
+        if os.path.exists(CATALOGO):
+            with open(CATALOGO, encoding="utf-8") as f:
+                cat = json.load(f)
+            self.servicios = {x["id"]: Servicio(x["id"], x["nombre"], x["categoria"], x["duracion"], x["precio"], x.get("descripcion", ""), x.get("etiqueta", ""), x.get("imagen", "")) for x in cat.get("servicios", [])}
+            self.productos = {x["id"]: x for x in cat.get("productos", [])}
         self.turnos, self._contador_id = [], 1
         if os.path.exists(DB):
             with open(DB, encoding="utf-8") as f:
@@ -74,6 +83,71 @@ class SistemaPeluqueria:
     def _guardar(self):
         with open(DB, "w", encoding="utf-8") as f:
             json.dump(self.turnos, f, ensure_ascii=False, indent=1)
+
+    # ---- Catálogo editable desde el panel admin (estilos/servicios y productos) ----
+    def categorias(self):
+        return sorted({c for e in self.estilistas.values() for c in e.categorias})
+
+    def _guardar_catalogo(self):
+        with open(CATALOGO, "w", encoding="utf-8") as f:
+            json.dump({"servicios": [s.a_dict() for s in self.servicios.values()], "productos": list(self.productos.values())}, f, ensure_ascii=False, indent=1)
+
+    def guardar_item(self, tipo, d):
+        """tipo: 'servicio' o 'producto'. Crea (sin id) o edita (con id)."""
+        es_serv = tipo == "servicio"
+        coleccion = self.servicios if es_serv else self.productos
+        nombre, descripcion = str(d.get("nombre") or "").strip()[:80], str(d.get("descripcion") or "").strip()[:300]
+        imagen = str(d.get("imagen") or "").strip()
+        try:
+            precio = round(float(str(d.get("precio")).replace(",", ".")), 2)
+        except (TypeError, ValueError):
+            precio = 0
+        if not nombre:
+            return False, "Ingresá un nombre."
+        if not (0 < precio <= 1e7):
+            return False, "Ingresá un precio válido (mayor a 0)."
+        if imagen and not re.fullmatch(r"/api/img/[a-f0-9]{32}|https://\S{1,1900}", imagen):
+            return False, "Foto no válida."
+        if es_serv:
+            categoria = str(d.get("categoria") or "").strip()[:40]
+            try:
+                duracion = int(d.get("duracion"))
+            except (TypeError, ValueError):
+                duracion = 0
+            if categoria not in self.categorias():
+                return False, "Elegí una categoría válida."
+            if not 15 <= duracion <= 480:
+                return False, "La duración debe estar entre 15 y 480 minutos."
+        with self.lock:
+            ident = int(d.get("id") or 0)
+            if ident and ident not in coleccion:
+                return False, "No encontrado."
+            antes = ""
+            if ident:
+                antes = coleccion[ident].imagen if es_serv else coleccion[ident].get("imagen", "")
+            else:
+                ident = max(coleccion, default=0) + 1
+            if es_serv:
+                coleccion[ident] = Servicio(ident, nombre, categoria, duracion, precio, descripcion, str(d.get("etiqueta") or "").strip()[:20] or categoria, imagen)
+            else:
+                coleccion[ident] = {"id": ident, "nombre": nombre, "descripcion": descripcion, "precio": precio, "imagen": imagen}
+            self._guardar_catalogo()
+            if antes and antes != imagen:
+                borrar_imagen(antes)
+            return True, ("Cambios guardados." if d.get("id") else "Estilo agregado." if es_serv else "Producto agregado.")
+
+    def eliminar_item(self, tipo, ident):
+        es_serv = tipo == "servicio"
+        coleccion = self.servicios if es_serv else self.productos
+        with self.lock:
+            if ident not in coleccion:
+                return False, "No encontrado."
+            if es_serv and len(coleccion) <= 1:
+                return False, "Tiene que quedar al menos un estilo."
+            item = coleccion.pop(ident)
+            self._guardar_catalogo()
+            borrar_imagen(item.imagen if es_serv else item.get("imagen", ""))
+            return True, "Estilo eliminado." if es_serv else "Producto eliminado."
 
     # RF03 - Tarifador automático
     def precio(self, servicio, inicio):
@@ -193,6 +267,30 @@ class SistemaPeluqueria:
         return out.getvalue()
 
 
+def borrar_imagen(url):
+    m = re.fullmatch(r"/api/img/([a-f0-9]{32})", url or "")
+    if m:
+        for ext in TIPOS_IMG:
+            try:
+                os.remove(os.path.join(IMGDIR, f"{m.group(1)}.{ext}"))
+            except OSError:
+                pass
+
+
+def guardar_imagen(data_url):
+    m = re.fullmatch(r"data:image/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)", str(data_url or ""))
+    if not m:
+        return None, "Imagen no válida (usá JPG, PNG o WebP)."
+    datos = base64.b64decode(m.group(2))
+    if not datos or len(datos) > 2 * 1024 * 1024:
+        return None, "La imagen supera los 2 MB."
+    os.makedirs(IMGDIR, exist_ok=True)
+    k = uuid.uuid4().hex
+    with open(os.path.join(IMGDIR, f"{k}.{m.group(1)}"), "wb") as f:
+        f.write(datos)
+    return "/api/img/" + k, None
+
+
 sistema = SistemaPeluqueria()
 
 # ---- Aviso por WhatsApp al administrador ----
@@ -256,8 +354,23 @@ class ServidorPeluqueria(SimpleHTTPRequestHandler):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         num = lambda k: int(q[k]) if q.get(k, "").isdigit() else 0
+        m = re.fullmatch(r"/api/img/([a-f0-9]{32})", u.path)
+        if m:
+            for ext, tipo in TIPOS_IMG.items():
+                ruta = os.path.join(IMGDIR, f"{m.group(1)}.{ext}")
+                if os.path.exists(ruta):
+                    with open(ruta, "rb") as f:
+                        body = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", tipo)
+                    self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    return self.wfile.write(body)
+            return self._json({"exito": False, "mensaje": "No encontrado."}, 404)
         if u.path == "/api/config":
             return self._json({"servicios": [s.a_dict() for s in sistema.servicios.values()],
+                               "productos": list(sistema.productos.values()), "categorias": sistema.categorias(),
                                "estilistas": [e.a_dict() for e in sistema.estilistas.values()],
                                "formas_pago": FORMAS_PAGO, "whatsapp": config["whatsapp"]})
         if u.path == "/api/disponibilidad":
@@ -322,6 +435,19 @@ class ServidorPeluqueria(SimpleHTTPRequestHandler):
                     config["callmebot_key"] = str(d["clave"]).strip()
                 guardar_config()
                 ok, msg = True, "Configuración guardada."
+            elif self.path == "/api/subir_imagen":
+                if not self._admin():
+                    return
+                url, error = guardar_imagen(d.get("imagen"))
+                return self._json({"exito": True, "url": url} if url else {"exito": False, "mensaje": error}, 200 if url else 400)
+            elif self.path in ("/api/servicio_guardar", "/api/producto_guardar"):
+                if not self._admin():
+                    return
+                ok, msg = sistema.guardar_item("servicio" if "servicio" in self.path else "producto", d)
+            elif self.path in ("/api/servicio_eliminar", "/api/producto_eliminar"):
+                if not self._admin():
+                    return
+                ok, msg = sistema.eliminar_item("servicio" if "servicio" in self.path else "producto", ident)
             elif self.path == "/api/cambiar_estado":
                 if not self._admin():
                     return

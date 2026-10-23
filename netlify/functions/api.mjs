@@ -1,7 +1,7 @@
 /* Backend para Netlify (equivalente a server.py). Persistencia: Netlify Blobs.
    Variables de entorno recomendadas en Netlify: ADMIN_PIN (obligatoria en producción), ADMIN_SECRET (opcional). */
 import { getStore } from "@netlify/blobs";
-import { createHmac, createHash, timingSafeEqual } from "node:crypto";
+import { createHmac, createHash, timingSafeEqual, randomUUID } from "node:crypto";
 
 export const config = { path: "/api/*" };
 
@@ -162,13 +162,31 @@ const ahora = () => {
 /* ---------- persistencia ---------- */
 const mem = new Map();   // solo para pruebas locales (LOCAL_MEMORY_STORE=1)
 const db = () => process.env.LOCAL_MEMORY_STORE
-  ? { get: async (k) => mem.get(k) ?? null, setJSON: async (k, v) => { mem.set(k, structuredClone(v)); } }
+  ? {
+      get: async (k) => mem.get(k)?.v ?? null,
+      setJSON: async (k, v) => { mem.set(k, { v: structuredClone(v) }); },
+      set: async (k, v, o) => { mem.set(k, { v, meta: o?.metadata }); },
+      getWithMetadata: async (k) => (mem.has(k) ? { data: mem.get(k).v, metadata: mem.get(k).meta } : null),
+      delete: async (k) => { mem.delete(k); },
+    }
   : getStore("peluqueria");
 const leer = async (k, def) => (await db().get(k, { type: "json" })) ?? def;
 const guardar = (k, v) => db().setJSON(k, v);
 
+/* ---------- catálogo editable (estilos/servicios y productos) ---------- */
+const catalogo = async () => {
+  const c = await leer("catalogo", null);
+  return c ? { productos: [], ...c } : { servicios: structuredClone(SERVICIOS), productos: [] };
+};
+const CATEGORIAS = [...new Set(ESTILISTAS.flatMap((e) => e.categorias))];   // categorías que algún estilista atiende
+const texto = (v, max) => String(v ?? "").trim().slice(0, max);
+const monto = (v) => { const n = Number(String(v ?? "").replace(",", ".")); return Number.isFinite(n) && n > 0 && n <= 1e7 ? Math.round(n * 100) / 100 : null; };
+const IMG_OK = /^(\/api\/img\/[a-f0-9]{32}|https:\/\/[^\s]{1,1900})$/;
+const borrarImg = async (url) => { const m = /^\/api\/img\/([a-f0-9]{32})$/.exec(url || ""); if (m) await db().delete("img:" + m[1]).catch(() => {}); };
+const sigId = (lista) => Math.max(0, ...lista.map((x) => x.id)) + 1;
+
 /* ---------- lógica de negocio ---------- */
-const servicio = (id) => SERVICIOS.find((s) => s.id === id);
+const servicio = (cat, id) => cat.servicios.find((s) => s.id === id);
 const precio = (s, ini) => { let p = s.precio; if ([0, 6].includes(dow(ini))) p *= 1.2; if (Math.floor((ini % 1440) / 60) >= 19) p += 1500; return Math.round(p * 100) / 100; };   // RF03
 const ocupado = (turnos, idEst, ini, fin, excluir) => turnos.some((t) => {            // RF02
   if (t.estado === "Cancelado" || t.estilista_id !== idEst || t.id === excluir) return false;
@@ -176,8 +194,8 @@ const ocupado = (turnos, idEst, ini, fin, excluir) => turnos.some((t) => {      
   return ini < a + t.duracion && a < fin;
 });
 const aptos = (s, idEst) => ESTILISTAS.filter((e) => e.categorias.includes(s.categoria) && (!idEst || e.id === idEst));
-function slots(turnos, fecha, idServ, idEst = 0) {
-  const s = servicio(idServ), dia = parse(fecha);
+function slots(turnos, cat, fecha, idServ, idEst = 0) {
+  const s = servicio(cat, idServ), dia = parse(fecha);
   if (!s || dia === null || !DIAS_ABIERTO.includes(dow(dia))) return [];
   const now = ahora(), out = [];
   for (let m = APERTURA; m <= CIERRE - s.duracion; m += PASO) {
@@ -186,10 +204,10 @@ function slots(turnos, fecha, idServ, idEst = 0) {
   }
   return out;
 }
-function primerTurno(turnos, idServ, idEst = 0) {
+function primerTurno(turnos, cat, idServ, idEst = 0) {
   const hoy = Math.floor(ahora() / 1440) * 1440;
   for (let i = 0; i < 30; i++) {
-    const f = fmt(hoy + i * 1440).slice(0, 10), l = slots(turnos, f, idServ, idEst).find((x) => x.libre);
+    const f = fmt(hoy + i * 1440).slice(0, 10), l = slots(turnos, cat, f, idServ, idEst).find((x) => x.libre);
     if (l) return { fecha: f, hora: l.hora };
   }
   return null;
@@ -227,10 +245,16 @@ export default async (req) => {
   const num = (k) => (/^\d+$/.test(q[k] || "") ? +q[k] : 0);
   try {
     if (req.method === "GET") {
+      const im = /^\/api\/img\/([a-f0-9]{32})$/.exec(path);
+      if (im) {
+        const r = await db().getWithMetadata("img:" + im[1], { type: "arrayBuffer" });
+        if (!r) return err("No encontrado.", 404);
+        return new Response(r.data, { headers: { "Content-Type": r.metadata?.tipo || "image/jpeg", "Cache-Control": "public, max-age=31536000, immutable" } });
+      }
       const cfg = await leer("config", { whatsapp: "", callmebot_key: "" });
-      if (path === "/api/config") return json({ servicios: SERVICIOS, estilistas: ESTILISTAS, formas_pago: FORMAS_PAGO, whatsapp: cfg.whatsapp });
-      if (path === "/api/disponibilidad") return json(slots(await leer("turnos", []), q.fecha, num("servicio"), num("estilista")));
-      if (path === "/api/primer_turno") return json(primerTurno(await leer("turnos", []), num("servicio"), num("estilista")));
+      if (path === "/api/config") { const cat = await catalogo(); return json({ servicios: cat.servicios, productos: cat.productos, categorias: CATEGORIAS, estilistas: ESTILISTAS, formas_pago: FORMAS_PAGO, whatsapp: cfg.whatsapp }); }
+      if (path === "/api/disponibilidad") return json(slots(await leer("turnos", []), await catalogo(), q.fecha, num("servicio"), num("estilista")));
+      if (path === "/api/primer_turno") return json(primerTurno(await leer("turnos", []), await catalogo(), num("servicio"), num("estilista")));
       if (path === "/api/mis_turnos") { const tel = digitos(q.telefono); return json(tel ? (await leer("turnos", [])).filter((t) => t.telefono === tel) : []); }
       if (path === "/api/admin_config") return admin ? json({ whatsapp: cfg.whatsapp, clave: !!cfg.callmebot_key }) : NOAUTH();
       if (path === "/api/turnos") return admin ? json(await leer("turnos", [])) : NOAUTH();
@@ -253,7 +277,7 @@ export default async (req) => {
       return err("PIN incorrecto.", 401);
     }
     if (path === "/api/agendar") {
-      const nombre = String(d.nombre ?? "").trim(), tel = digitos(d.telefono), s = servicio(parseInt(d.servicio) || 0), idEst = parseInt(d.estilista) || 0;
+      const nombre = String(d.nombre ?? "").trim(), tel = digitos(d.telefono), s = servicio(await catalogo(), parseInt(d.servicio) || 0), idEst = parseInt(d.estilista) || 0;
       if (!nombre || tel.length < 6) return err("Ingresá un nombre y un teléfono válidos.");
       if (!s) return err("Servicio no válido.");
       if (!FORMAS_PAGO.includes(d.forma_pago)) return err("Seleccioná una forma de pago válida.");
@@ -285,6 +309,46 @@ export default async (req) => {
       if (d.clave) cfg.callmebot_key = String(d.clave).trim();
       await guardar("config", cfg);
       return json({ exito: true, mensaje: "Configuración guardada." });
+    }
+    if (path === "/api/subir_imagen") {   // recibe una imagen (data URL) y devuelve una URL propia /api/img/<id>
+      const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(d.imagen ?? ""));
+      if (!m) return err("Imagen no válida (usá JPG, PNG o WebP).");
+      const buf = Buffer.from(m[2], "base64");
+      if (!buf.length || buf.length > 2 * 1024 * 1024) return err("La imagen supera los 2 MB.");
+      const k = randomUUID().replace(/-/g, "");
+      await db().set("img:" + k, buf, { metadata: { tipo: m[1] } });
+      return json({ exito: true, url: "/api/img/" + k });
+    }
+    if (path === "/api/servicio_guardar" || path === "/api/producto_guardar") {
+      const esServ = path === "/api/servicio_guardar", cat = await catalogo(), lista = esServ ? cat.servicios : cat.productos;
+      const nombre = texto(d.nombre, 80), descripcion = texto(d.descripcion, 300), precioN = monto(d.precio), imagen = String(d.imagen ?? "").trim();
+      if (!nombre) return err("Ingresá un nombre.");
+      if (precioN === null) return err("Ingresá un precio válido (mayor a 0).");
+      if (imagen && !IMG_OK.test(imagen)) return err("Foto no válida.");
+      let item = id ? lista.find((x) => x.id === id) : null;
+      if (id && !item) return err("No encontrado.", 404);
+      const antes = item?.imagen || "";
+      const nuevo = { id: item?.id ?? sigId(lista), nombre, descripcion, precio: precioN, imagen };
+      if (esServ) {
+        const categoria = texto(d.categoria, 40), duracion = parseInt(d.duracion);
+        if (!CATEGORIAS.includes(categoria)) return err("Elegí una categoría válida.");
+        if (!(duracion >= 15 && duracion <= 480)) return err("La duración debe estar entre 15 y 480 minutos.");
+        Object.assign(nuevo, { categoria, duracion, etiqueta: texto(d.etiqueta, 20) || categoria });
+      }
+      if (item) Object.assign(item, nuevo); else lista.push(nuevo);
+      await guardar("catalogo", cat);
+      if (antes && antes !== imagen) await borrarImg(antes);
+      return json({ exito: true, mensaje: item ? "Cambios guardados." : esServ ? "Estilo agregado." : "Producto agregado.", item: nuevo });
+    }
+    if (path === "/api/servicio_eliminar" || path === "/api/producto_eliminar") {
+      const esServ = path === "/api/servicio_eliminar", cat = await catalogo(), clave = esServ ? "servicios" : "productos";
+      const item = cat[clave].find((x) => x.id === id);
+      if (!item) return err("No encontrado.", 404);
+      if (esServ && cat.servicios.length <= 1) return err("Tiene que quedar al menos un estilo.");
+      cat[clave] = cat[clave].filter((x) => x.id !== id);
+      await guardar("catalogo", cat);
+      await borrarImg(item.imagen);
+      return json({ exito: true, mensaje: esServ ? "Estilo eliminado." : "Producto eliminado." });
     }
     if (path === "/api/cambiar_estado" || path === "/api/confirmar_pago") {
       const turnos = await leer("turnos", []), t = turnos.find((x) => x.id === id);
